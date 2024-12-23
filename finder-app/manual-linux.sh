@@ -12,8 +12,10 @@ FINDER_APP_DIR=$(realpath $(dirname $0))
 ARCH=arm64
 CROSS_COMPILE=aarch64-none-linux-gnu-
 
-#run from finder-app directory
-current_directory=$(pwd)
+#run from home directory
+current_directory=$(git rev-parse --show-toplevel)
+
+echo "PWD is ${current_directory}"
 
 if [ $# -lt 1 ]
 then
