@@ -86,8 +86,10 @@ else
 fi
 
 # Make and install busybox
-make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
+make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
 make CONFIG_PREFIX=${OUTDIR}/rootfs ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} install
+
+cd ${OUTDIR}/rootfs
 
 echo "Library dependencies"
 ${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
@@ -95,14 +97,16 @@ ${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
 
 # Add library dependencies to rootfs
 SYSROOT=$(${CROSS_COMPILE}gcc --print-sysroot)
-cp -a ${SYSROOT}/lib/ld-linux-aarch64.so.1 ${OUTDIR}/rootfs/lib
-cp -a ${SYSROOT}/lib64/libm.so.6 ${OUTDIR}/rootfs/lib64
-cp -a ${SYSROOT}/lib64/libresolv.so.2 ${OUTDIR}/rootfs/lib64
-cp -a ${SYSROOT}/lib64/libc.so.6 ${OUTDIR}/rootfs/lib64
+sudo cp -a ${SYSROOT}/lib/ld-linux-aarch64.so.1 ${OUTDIR}/rootfs/lib
+sudo cp -a ${SYSROOT}/lib64/libm.so.6 ${OUTDIR}/rootfs/lib64
+sudo cp -a ${SYSROOT}/lib64/libresolv.so.2 ${OUTDIR}/rootfs/lib64
+sudo cp -a ${SYSROOT}/lib64/libc.so.6 ${OUTDIR}/rootfs/lib64
 
 # Make device nodes
 sudo mknod -m 666 ${OUTDIR}/rootfs/dev/null c 1 3
 sudo mknod -m 666 ${OUTDIR}/rootfs/dev/console c 5 1
+
+cd ${current_directory}/finder-app
 
 # Clean and build the writer utility
 make clean
@@ -110,17 +114,18 @@ make CROSS_COMPILE=${CROSS_COMPILE}
 
 # Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
-cp ${current_directory}/finder-app/writer ${OUTDIR}/rootfs/home/
-cp ${current_directory}/finder-app/finder.sh ${OUTDIR}/rootfs/home/
-cp ${current_directory}/finder-app/conf/ ${OUTDIR}/rootfs/home/
-cp ${current_directory}/finder-app/finder-test.sh ${OUTDIR}/rootfs/home/
-cp ${current_directory}/finder-app/autorun-qemu.sh ${OUTDIR}/rootfs/home/
+sudo cp ${current_directory}/finder-app/writer ${OUTDIR}/rootfs/home/
+sudo cp ${current_directory}/finder-app/finder.sh ${OUTDIR}/rootfs/home/
+sudo cp -r ${current_directory}/finder-app/conf/ ${OUTDIR}/rootfs/home/
+sudo cp ${current_directory}/finder-app/finder-test.sh ${OUTDIR}/rootfs/home/
+sudo cp ${current_directory}/finder-app/autorun-qemu.sh ${OUTDIR}/rootfs/home/
 
 # Chown the root directory
 sudo chown -R root:root ${OUTDIR}/rootfs
 
 # Create initramfs.cpio.gz
 cd ${OUTDIR}/rootfs
-find . | cpio -H newc -ov --owner root:root > ${outdir}/initramfs.cpio
+find . | cpio -H newc -ov --owner root:root > ${OUTDIR}/initramfs.cpio
+cd ${OUTDIR}
 gzip -f initramfs.cpio
 #COMMENT
