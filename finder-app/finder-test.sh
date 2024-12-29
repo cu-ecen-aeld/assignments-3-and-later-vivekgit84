@@ -36,7 +36,8 @@ assignment=`cat ../../etc/finder-app/conf/assignment.txt`
 
 if [ $assignment != 'assignment1' ]
 then
-	if [ -d "$WRITEDIR" ]
+	if [ ! -d "$WRITEDIR" ]
+	then
 		mkdir -p "$WRITEDIR"
 
 		#The WRITEDIR is in quotes because if the directory path consists of spaces, then variable substitution will consider it as multiple argument.
