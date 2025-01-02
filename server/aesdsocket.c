@@ -1,18 +1,18 @@
-#include <iostream>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <cstring>
-#include <syslog.h>
-#include <netinet/in.h>
-#include <errno.h>
 #include <signal.h>
-#include <stdlib.h>
+#include <syslog.h>
+#include <errno.h>
+#include <netinet/in.h>
 
 #define PORT 9000
-#define BACKLOG 10
+#define BACKLOG 100
 #define BUFFER_SIZE 1024
 #define FILE_PATH "/var/tmp/aesdsocketdata"
 
@@ -20,6 +20,7 @@ int server_fd = -1;
 
 void handle_signal(int signal) {
     syslog(LOG_INFO, "Caught signal %d, exiting", signal);
+    printf("Caught signal %d, exiting\n", signal);
     
     // Close server socket if open
     if (server_fd != -1) {
@@ -122,17 +123,17 @@ void daemonize() {
     pid_t pid = fork();
     if (pid < 0) {
         perror("fork failed");
-        exit(EXIT_FAILURE);
+        exit(1);
     }
     if (pid > 0) {
         // Parent process
-        exit(EXIT_SUCCESS);
+        exit(0);
     }
 
     // Child process
     if (setsid() < 0) {
         perror("setsid failed");
-        exit(EXIT_FAILURE);
+        exit(1);
     }
 
     // Redirect standard file descriptors
@@ -146,18 +147,31 @@ void daemonize() {
 }
 
 int main(int argc, char *argv[]) {
-    bool daemon_mode = false;
+    int daemon_mode = 0;
 
     // Parse command-line arguments
     if (argc > 1 && strcmp(argv[1], "-d") == 0) {
-        daemon_mode = true;
+        daemon_mode = 1;
     }
 
     openlog("aesdsocket", LOG_PID, LOG_USER);
 
-    // Register signal handlers
-    signal(SIGINT, handle_signal);
-    signal(SIGTERM, handle_signal);
+    struct sigaction sa; 
+    memset(&sa, 0, sizeof(struct sigaction));
+    sa.sa_handler = handle_signal; 
+    
+    if (sigaction(SIGINT, &sa, NULL) != 0) 
+    { 
+    	perror("Error handling SIGINT"); 
+    	exit(1); 
+    } 
+    
+    if (sigaction(SIGTERM, &sa, NULL) != 0) 
+    { 
+	perror("Error handling SIGTERM"); 
+	exit(1);
+    }
+    	
 
     server_fd = socket(PF_INET, SOCK_STREAM, 0);
     if (server_fd == -1) {
@@ -187,7 +201,7 @@ int main(int argc, char *argv[]) {
         daemonize();
     }
 
-    while (true) {
+    while (1) {
         struct sockaddr_in client_addr;
         socklen_t client_addr_len = sizeof(client_addr);
         int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_addr_len);
