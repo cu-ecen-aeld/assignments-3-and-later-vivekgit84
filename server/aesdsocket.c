@@ -16,166 +16,6 @@
 #define BUFFER_SIZE 1024
 #define FILE_PATH "/var/tmp/aesdsocketdata"
 
-
-
-#include <sys/stat.h>
-
-#define MAX_PACKAGE_LEN 1024*100  // 100 Kbytes
-
-static fd_set active_fds;
-static char persistent_file[] = "/var/tmp/aesdsocketdata";
-
-static ssize_t read_from_file(const char* user_file, char* read_buff) {
-
-    /**
-     * Read file content
-     * @param user_file Write to read from
-     * @param str The memory to store the file content
-     * @return  Return the number of bytes read, or -1 if an error occure
-     */
-
-    FILE *fptr;
-    size_t sz;
-    long int file_sz;
-    
-    // Open read only
-    fptr = fopen(user_file, "r");
-    if (fptr == NULL) {
-        printf("Failed to open %s.\n", user_file);
-        return -1;
-    }
-
-    // Check file permission
-    struct stat st;
-    stat(user_file, &st);
-    printf("File permissions:  %04o.\n", st.st_mode & 0777);
-
-    // Read file content
-    fseek(fptr, 0, SEEK_END); // Move file position to the end of the file
-    file_sz = ftell(fptr); // Get the current file position
-    fseek(fptr, 0, SEEK_SET); // Reset file position to start of file
-    sz = fread(read_buff, 1, file_sz, fptr);
-    if ((long int)sz != file_sz) {
-        printf("Warning: read %ld bytes != %ld file size.\n", sz, file_sz);
-    }
-    printf("Read '%ld' bytes from file '%s'.\n", sz, user_file);
-
-    // Close the file
-    if (fclose(fptr) < 0) {
-        printf("Failed to close %s.\n", user_file);
-        return -1;
-    }
-
-    return sz;
-}
-
-static int write_to_file(const char* user_file, const char* str) {
-
-    /**
-     * Log messge to file
-     * @param user_file File to write to 
-     * @param str The message to log
-     * @return Return the number of bytes written, or -1 if an error occure
-     */
-
-    int fptr;
-    int sz;
-    
-    // Append to already created file
-    fptr = open(user_file, O_WRONLY | O_APPEND | O_CREAT, 0600);
-
-    if (fptr == -1) {
-        printf("Failed to open %s.\n", user_file);
-        return -1;
-    }
-
-    // Write the buffer to the file
-    sz = write(fptr, str, strlen(str));
-    printf("Wrote '%d' bytes to file '%s'.\n", sz, user_file);
-    if (sz == -1) {
-        printf("Failed to write to file.\n");
-        return -1;
-    }
-
-    // Close the file
-    if (close(fptr) < 0) {
-        printf("Failed to close %s.\n", user_file);
-        return -1;
-    }
-
-    return sz;
-}
-
-
-static void msg_exchange(int connfd) { 
-    /**
-     * Function designed for msg exchange between client and server. 
-     * @param connfd The socket connection to client with client_ip
-     * @param clientip The ip of the socket client
-     * @return Void
-     */
-    
-    char buff[MAX_PACKAGE_LEN+1]; // One byte padding for '\0' termination
-    ssize_t buff_len = 0;
-    char buff_offset = 0;
-    bzero(buff, MAX_PACKAGE_LEN+1); 
-    char *read_buff = (char*)malloc(MAX_PACKAGE_LEN);
-    ssize_t read_buff_total = 0;
-    ssize_t send_buff_len = 0;
-    ssize_t send_buff_total = 0;
-
-    // Read the message from client non blocking and copy it in buffer 
-    buff_len = recv(connfd, (buff + buff_offset), sizeof(buff), MSG_DONTWAIT); 
-    if (buff_len == -1 && errno == EAGAIN) {
-        printf("Waiting for incoming data from client fd %d.\n", connfd); 
-    } else if (buff_len == 0) {
-        FD_CLR(connfd, &active_fds);
-        
-  
-    } else if (buff_len > MAX_PACKAGE_LEN) {
-        printf("Packet from client fd %d exeeds length of %d bytes: Discarded.\n", connfd, (int)MAX_PACKAGE_LEN); 
-    } else {
-        if (buff_len > 0) {
-            // Check string termination ('\0')
-            if (strlen(buff) != (size_t)(buff_len-1)) {
-                buff[buff_len] = '\0'; // padding string termination
-            }
-
-            // Check package termination (newline)
-            if (buff[strlen(buff)-1] == '\n') {
-                printf("Received package from client fd %d: %s", connfd, buff); 
-
-                // Write package to persistance file
-                if (write_to_file(persistent_file, buff) == -1) {
-                    printf("Failed to log message to persistant file.\n");
-                } else {
-                    // Send all packages to the client
-                    read_buff_total = read_from_file(persistent_file, read_buff);
-
-                    if (read_buff_total != -1) {
-                        while(send_buff_total < read_buff_total) { 
-                            printf("Sending all packages to client fd %d.\n", connfd);
-                            //printf("Packages:\n%s", read_buff);  
-                            send_buff_len = send(connfd,read_buff, read_buff_total, MSG_DONTWAIT);
-                            if (buff_len == -1 && errno == EAGAIN) {
-                                continue;
-                            }
-                            send_buff_total += send_buff_len; 
-                        }
-                        printf("%ld bytes sent.\n", send_buff_total); 
-                    } else {
-                        printf("Failed to read all packages from persistant file.\n");
-                    }
-                }
-            } else {
-                printf("Missing package termination (\n) from client fd %d.\n", connfd); 
-            }
-        }
-    }
-
-    free(read_buff);
-} 
-
 int server_fd = -1;
 
 void handle_signal(int signal) {
@@ -339,6 +179,15 @@ int main(int argc, char *argv[]) {
         syslog(LOG_ERR, "Failed to create socket: %s", strerror(errno));
         return -1;
     }
+    
+    int opt = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
+    syslog(LOG_ERR, "setsockopt failed: %s", strerror(errno));
+    close(server_fd);
+    closelog();
+    exit(EXIT_FAILURE);
+}
+
 
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
@@ -379,8 +228,7 @@ int main(int argc, char *argv[]) {
         inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
         syslog(LOG_INFO, "Accepted connection from %s", client_ip);
 
-        /*handle_client(client_fd);*/
-        msg_exchange(client_fd);
+        handle_client(client_fd);
     }
 
     close(server_fd);
