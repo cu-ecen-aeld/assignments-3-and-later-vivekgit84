@@ -1,22 +1,21 @@
+#include "aesdsocket.h"
+
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
+#include <syslog.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <arpa/inet.h>
-#include <signal.h>
-#include <syslog.h>
-#include <errno.h>
-#include <netinet/in.h>
+#include <unistd.h>
 
 #define PORT 9000
 #define BACKLOG 10
 #define BUFFER_SIZE 1024
 #define FILE_PATH "/var/tmp/aesdsocketdata"
-
-int server_fd = -1;
 
 void handle_signal(int signal) {
     syslog(LOG_INFO, "Caught signal %d, exiting", signal);
@@ -39,6 +38,14 @@ void handle_signal(int signal) {
     exit(0);
 }
 
+void clean(char *packet, int file_fd, int client_fd)
+{
+    syslog(LOG_INFO, "Closed connection from %s", client_ip);
+    free(packet);
+    close(file_fd);
+    close(client_fd);	
+}
+
 void handle_client(int client_fd) {
     char buffer[BUFFER_SIZE];
     ssize_t bytes_received;
@@ -48,6 +55,7 @@ void handle_client(int client_fd) {
     int file_fd = open(FILE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (file_fd == -1) {
         syslog(LOG_ERR, "Failed to open file: %s", strerror(errno));
+        syslog(LOG_INFO, "Closed connection from %s", client_ip);
         close(client_fd);
         return;
     }
@@ -60,9 +68,7 @@ void handle_client(int client_fd) {
             if (!packet) {
                 syslog(LOG_ERR, "Memory allocation failed");
                 perror("realloc failed");
-                free(packet);
-                close(file_fd);
-                close(client_fd);
+                clean(packet, file_fd, client_fd);
                 return;
             }
             memcpy(packet + packet_len, buffer, newline_index);
@@ -72,9 +78,7 @@ void handle_client(int client_fd) {
             if (bytes_written == -1) {
                 syslog(LOG_ERR, "Write to file failed");
                 perror("write failed");
-                free(packet);
-                close(file_fd);
-                close(client_fd);
+                clean(packet, file_fd, client_fd);
                 return;
             }
 
@@ -82,32 +86,19 @@ void handle_client(int client_fd) {
 
             // Close and reopen the file for reading 
             close(file_fd);
-            file_fd = open(FILE_PATH, O_RDONLY);
-
-            if (file_fd == -1) {
-                syslog(LOG_ERR, "File open failed");
-                perror("file open failed");
-                free(packet);
-                close(client_fd);
-                return;
+            file_fd = read_file_and_send(packet, client_fd);
+            if(file_fd == -1)
+            {
+            	return;
             }
-
-            // Read the file contents and send them to the client 
-            char read_buffer[1024];
-            ssize_t bytes_read;
-            while ((bytes_read = read(file_fd, read_buffer, sizeof(read_buffer))) > 0) {
-                send(client_fd, read_buffer, bytes_read, 0);
-            }
-            close(file_fd); // Close after reading
-            break; // Exit the loop after sending the content
+         
+            break; // Exit the loop after read and sending the content
         } else {
             packet = (char*)realloc(packet, packet_len + bytes_received);
             if (!packet) {
                 syslog(LOG_ERR, "Memory allocation failed");
                 perror("realloc failed");
-                free(packet);
-                close(file_fd);
-                close(client_fd);
+                clean(packet, file_fd, client_fd);
                 return;
             }
             memcpy(packet + packet_len, buffer, bytes_received);
@@ -115,9 +106,29 @@ void handle_client(int client_fd) {
         }
     }
 
-    free(packet);
-    close(file_fd);
-    close(client_fd);
+    clean(packet, file_fd, client_fd);
+}
+
+int read_file_and_send(char *packet, int client_fd)
+{
+	int file_fd = open(FILE_PATH, O_RDONLY);
+	if (file_fd == -1) {
+		syslog(LOG_INFO, "Closed connection from %s", client_ip);
+		syslog(LOG_ERR, "File open failed");
+		perror("file open failed");
+		free(packet);
+		close(client_fd);
+		return file_fd;
+	}
+
+	// Read the file contents and send them to the client 
+	char read_buffer[1024];
+	ssize_t bytes_read;
+	while ((bytes_read = read(file_fd, read_buffer, sizeof(read_buffer))) > 0) {
+	send(client_fd, read_buffer, bytes_read, 0);
+	}
+	
+	return file_fd;
 }
 
 void daemonize() {
@@ -224,15 +235,12 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        char client_ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
         syslog(LOG_INFO, "Accepted connection from %s", client_ip);
 
         handle_client(client_fd);
     }
 
-    close(server_fd);
-    closelog();
     return 0;
 }
 
