@@ -1,5 +1,5 @@
 #include "aesdsocket.h"
-
+#include <sys/queue.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -11,15 +11,99 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <stdbool.h>
+#include <time.h>
 
 #define PORT 9000
 #define BACKLOG 10
 #define BUFFER_SIZE 1024
 #define FILE_PATH "/var/tmp/aesdsocketdata"
 
+pthread_mutex_t thread_list_mutex  = PTHREAD_MUTEX_INITIALIZER;
+#define TIMER_INTERVAL_SEC 10
+
+typedef struct thread_node{
+    pthread_t thread_id;
+    bool iscomplete;
+    SLIST_ENTRY(thread_node) next;
+}thread_node;
+
+void handle_timer() {
+    time_t now = time(NULL);
+    struct tm* local_time = localtime(&now);
+    char timestamp[256];
+    strftime(timestamp, sizeof(timestamp), "timestamp: %a, %d %b %Y %H:%M:%S %z\n", local_time);
+
+    pthread_mutex_lock(&thread_list_mutex);
+    int file_fd = open(FILE_PATH, O_WRONLY | O_APPEND, 0644);
+    if (file_fd == -1) {
+        syslog(LOG_ERR, "Failed to open file: %s", strerror(errno));
+    } else {
+        write(file_fd, timestamp, strlen(timestamp));
+        close(file_fd);
+    }
+    pthread_mutex_unlock(&thread_list_mutex);
+}
+
+void setup_timer() {
+    struct sigaction sa;
+    struct sigevent sev;
+    struct itimerspec its;
+    timer_t timer_id;
+
+    // Set up the signal handler for the timer
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handle_timer;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGRTMIN, &sa, NULL) == -1) {
+        syslog(LOG_ERR, "Failed to set up signal handler: %s", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+    // Set up the timer
+    memset(&sev, 0, sizeof(sev));
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo = SIGRTMIN;
+    if (timer_create(CLOCK_REALTIME, &sev, &timer_id) == -1) {
+        syslog(LOG_ERR, "Failed to create timer: %s", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+    // Set the timer interval
+    its.it_value.tv_sec = TIMER_INTERVAL_SEC;
+    its.it_value.tv_nsec = 0;
+    its.it_interval.tv_sec = TIMER_INTERVAL_SEC;
+    its.it_interval.tv_nsec = 0;
+    if (timer_settime(timer_id, 0, &its, NULL) == -1) {
+        syslog(LOG_ERR, "Failed to set timer: %s", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+}
+
+// Define the head of the singly linked list using queue.h macros
+SLIST_HEAD(slisthead, thread_node) head;
+
+
 void handle_signal(int signal) {
     syslog(LOG_INFO, "Caught signal %d, exiting", signal);
     printf("Caught signal %d, exiting\n", signal);
+    
+     struct thread_node *node;
+    
+    SLIST_FOREACH(node, &head, next) 
+    {
+    	pthread_cancel(node->thread_id);
+    	free(node);  // Free the node
+    }
+    
+    SLIST_FOREACH(node, &head, next) 
+    {
+       pthread_join(node->thread_id, NULL);
+      
+      SLIST_REMOVE(&head, node, thread_node, next);  // Remove the node from the list
+      free(node);  // Free the node
+    }
     
     // Close server socket if open
     if (server_fd != -1) {
@@ -46,7 +130,10 @@ void clean(char *packet, int file_fd, int client_fd)
     close(client_fd);	
 }
 
-void handle_client(int client_fd) {
+void* handle_client(void* arg) {
+    pthread_mutex_lock(&thread_list_mutex ); 
+    int client_fd = *(int*)arg;
+    free(arg);
     char buffer[BUFFER_SIZE];
     ssize_t bytes_received;
     char *packet = NULL;
@@ -57,7 +144,7 @@ void handle_client(int client_fd) {
         syslog(LOG_ERR, "Failed to open file: %s", strerror(errno));
         syslog(LOG_INFO, "Closed connection from %s", client_ip);
         close(client_fd);
-        return;
+        return NULL;
     }
 
     while ((bytes_received = recv(client_fd, buffer, BUFFER_SIZE, 0)) > 0) {
@@ -69,7 +156,7 @@ void handle_client(int client_fd) {
                 syslog(LOG_ERR, "Memory allocation failed");
                 perror("realloc failed");
                 clean(packet, file_fd, client_fd);
-                return;
+                return NULL;
             }
             memcpy(packet + packet_len, buffer, newline_index);
             packet_len += newline_index;
@@ -79,7 +166,7 @@ void handle_client(int client_fd) {
                 syslog(LOG_ERR, "Write to file failed");
                 perror("write failed");
                 clean(packet, file_fd, client_fd);
-                return;
+                return NULL;
             }
 
             packet_len = 0;
@@ -89,7 +176,7 @@ void handle_client(int client_fd) {
             file_fd = read_file_and_send(packet, client_fd);
             if(file_fd == -1)
             {
-            	return;
+            	return NULL;
             }
          
             break; // Exit the loop after read and sending the content
@@ -99,7 +186,7 @@ void handle_client(int client_fd) {
                 syslog(LOG_ERR, "Memory allocation failed");
                 perror("realloc failed");
                 clean(packet, file_fd, client_fd);
-                return;
+                return NULL;
             }
             memcpy(packet + packet_len, buffer, bytes_received);
             packet_len += bytes_received;
@@ -107,6 +194,24 @@ void handle_client(int client_fd) {
     }
 
     clean(packet, file_fd, client_fd);
+    
+    pthread_t threadId = pthread_self();
+    
+     struct thread_node *node;
+    
+    // Iterate through the singly linked list and print the data
+    SLIST_FOREACH(node, &head, next) 
+    {
+	if(node->thread_id == threadId)
+	{
+	   node->iscomplete = true;
+	}
+    }
+           
+    
+    pthread_mutex_unlock(&thread_list_mutex );
+    
+     return NULL;
 }
 
 int read_file_and_send(char *packet, int client_fd)
@@ -156,6 +261,22 @@ void daemonize() {
     open("/dev/null", O_RDONLY);
     open("/dev/null", O_RDWR);
     open("/dev/null", O_RDWR);
+}
+
+void add_thread_in_list(pthread_t thread_id)
+{
+	pthread_mutex_lock(&thread_list_mutex);
+
+	thread_node* node = (thread_node*)malloc(sizeof(thread_node));
+	if (node == NULL) {
+	    perror("malloc");
+	    exit(EXIT_FAILURE);
+	}
+	
+	node->thread_id = thread_id;
+        node->iscomplete = false;
+        SLIST_INSERT_HEAD(&head, node, next); // insert node at next of head
+        pthread_mutex_unlock(&thread_list_mutex);
 }
 
 int main(int argc, char *argv[]) {
@@ -221,6 +342,12 @@ int main(int argc, char *argv[]) {
     if (daemon_mode) {
         daemonize();
     }
+    
+    // Initialize the head of the list
+    SLIST_INIT(&head);
+    
+    // Setup the timer
+    setup_timer();
 
     while (1) {
         struct sockaddr_in client_addr;
@@ -237,8 +364,29 @@ int main(int argc, char *argv[]) {
 
         inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
         syslog(LOG_INFO, "Accepted connection from %s", client_ip);
-
-        handle_client(client_fd);
+        
+        // Create a new thread to handle the client connection
+        pthread_t thread_id;
+        int *client_fd_ptr = malloc(sizeof(int));
+        *client_fd_ptr = client_fd;
+        pthread_create(&thread_id, NULL, handle_client, client_fd_ptr);
+        
+        add_thread_in_list(thread_id);
+        
+         struct thread_node *node;
+        
+        // Iterate through the singly linked list
+	SLIST_FOREACH(node, &head, next)
+	{
+		if(node->iscomplete)
+		{
+		   pthread_join(node->thread_id, NULL);
+		   SLIST_REMOVE(&head, node, thread_node, next);  // Remove the node from the list
+		   free(node);  // Free the node
+		}
+        }
+             
+        
     }
 
     return 0;
