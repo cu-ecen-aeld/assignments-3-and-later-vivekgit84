@@ -94,7 +94,6 @@ void handle_signal(int signal) {
     SLIST_FOREACH(node, &head, next) 
     {
     	pthread_cancel(node->thread_id);
-    	free(node);  // Free the node
     }
     
     SLIST_FOREACH(node, &head, next) 
