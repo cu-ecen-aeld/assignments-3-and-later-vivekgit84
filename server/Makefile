@@ -1,19 +1,19 @@
 # Define the compiler and flags
-CC := gcc
-CFLAGS := -Wall -Wextra -Werror
+CC ?= gcc
+CFLAGS ?= -Wall -Wextra -Werror
 
 # Define the target executable
-TARGET := aesdsocket
+TARGET ?= aesdsocket
 
 # Define the source files
-SRCS := aesdsocket.c
+SRCS ?= aesdsocket.c
 
 # Define the object files
-OBJS := $(SRCS:.c=.o)
+OBJS ?= $(SRCS:.c=.o)
 
 # Check if CROSS_COMPILE is specified
 ifdef CROSS_COMPILE
-CC := $(CROSS_COMPILE)gcc
+CC = $(CROSS_COMPILE)gcc
 endif
 
 # Default target to build the application
