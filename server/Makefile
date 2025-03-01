@@ -1,6 +1,7 @@
 # Define the compiler and flags
 CC ?= gcc
 CFLAGS ?= -Wall -Wextra -Werror
+LDFLAGS ?= 
 
 # Define the target executable
 TARGET ?= aesdsocket
@@ -21,7 +22,7 @@ all: $(TARGET)
 
 # Rule to build the target executable
 $(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
 # Rule to compile the source files into object files
 %.o: %.c
