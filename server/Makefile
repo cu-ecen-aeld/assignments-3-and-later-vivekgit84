@@ -1,35 +1,24 @@
-# Define the compiler and flags
-CC ?= gcc
-CFLAGS ?= -Wall -Wextra -Werror
-LDFLAGS ?= 
-
-# Define the target executable
-TARGET ?= aesdsocket
-
-# Define the source files
-SRCS ?= aesdsocket.c
-
-# Define the object files
-OBJS ?= $(SRCS:.c=.o)
-
-# Check if CROSS_COMPILE is specified
-ifdef CROSS_COMPILE
-CC = $(CROSS_COMPILE)gcc
+ifeq ($(CC),)
+	CC = $(CROSS_COMPILE)gcc
 endif
 
-# Default target to build the application
-all: $(TARGET)
+ifeq ($(CFLAGS),)
+	CFLAGS = -g -Wall -Werror 
+endif
 
-# Rule to build the target executable
-$(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+ifeq ($(LDFLAGS),)
+	LDFLAGS = -pthread -lrt
+endif
 
-# Rule to compile the source files into object files
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+all: aesdsocket
 
-# Clean target to remove the executable and object files
+default: aesdsocket
+
+aesdsocket.o : aesdsocket.c
+	$(CC) $(CFLAGS) -c -o aesdsocket.o aesdsocket.c $(INCLUDES)
+
+aesdsocket : aesdsocket.o
+	$(CC) $(CFLAGS) aesdsocket.o -o aesdsocket $(INCLUDES) $(LDFLAGS)
+
 clean:
-	rm -f $(TARGET) $(OBJS)
-
-.PHONY: all clean
+	rm -f *.o aesdsocket *.elf *.map
