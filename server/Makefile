@@ -1,24 +1,26 @@
-ifeq ($(CC),)
-	CC = $(CROSS_COMPILE)gcc
-endif
+# Makefile for writer application
 
-ifeq ($(CFLAGS),)
-	CFLAGS = -g -Wall -Werror 
-endif
+# Compiler
+CC = gcc
 
-ifeq ($(LDFLAGS),)
-	LDFLAGS = -pthread -lrt
-endif
+# Cross-compiler prefix (default to empty, meaning native compilation)
+CROSS_COMPILE ?=
 
-all: aesdsocket
+# Compiler flags
+CFLAGS = -Wall -Wextra -pthread -lgcc_s -lrt
 
-default: aesdsocket
+# Source files
+SRC = aesdsocket.c
 
-aesdsocket.o : aesdsocket.c
-	$(CC) $(CFLAGS) -c -o aesdsocket.o aesdsocket.c $(INCLUDES)
+# Output binary
+OUTPUT = aesdsocket
 
-aesdsocket : aesdsocket.o
-	$(CC) $(CFLAGS) aesdsocket.o -o aesdsocket $(INCLUDES) $(LDFLAGS)
+all: $(OUTPUT)
+
+$(OUTPUT): $(SRC)
+	$(CROSS_COMPILE)$(CC) $(CFLAGS) -o $(OUTPUT) $(SRC)
 
 clean:
-	rm -f *.o aesdsocket *.elf *.map
+	rm -f $(OUTPUT)
+
+.PHONY: all clean
