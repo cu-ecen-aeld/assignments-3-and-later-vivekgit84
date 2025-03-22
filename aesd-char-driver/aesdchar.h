@@ -4,7 +4,7 @@
  *  Created on: Oct 23, 2019
  *      Author: Dan Walkes
  */
-
+ 
 #ifndef AESD_CHAR_DRIVER_AESDCHAR_H_
 #define AESD_CHAR_DRIVER_AESDCHAR_H_
 
@@ -23,6 +23,8 @@
 #  define PDEBUG(fmt, args...) /* not debugging: nothing */
 #endif
 
+#include "aesd-circular-buffer.h"
+
 struct aesd_dev
 {
         /**
@@ -35,6 +37,9 @@ struct aesd_dev
 	struct mutex device_lock;     /* mutual exclusion semaphore     */
 	
 	struct cdev cdev;	  /* Char device structure		*/
+	
+	char *partial_command;        /* Pointer to store partial commands */
+        size_t partial_size;          /* Length of the partial command*/
 
 
 };

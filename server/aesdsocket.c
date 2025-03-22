@@ -18,7 +18,16 @@
 #define PORT 9000
 #define BACKLOG 10
 #define BUFFER_SIZE 1024
+
+#define USE_AESD_CHAR_DEVICE    (1)
+
+#if USE_AESD_CHAR_DEVICE
+#define FILE_PATH "/dev/aesdchar"
+#else
 #define FILE_PATH "/var/tmp/aesdsocketdata"
+#endif
+
+int file_fd = -1;
 
 pthread_mutex_t thread_list_mutex  = PTHREAD_MUTEX_INITIALIZER;
 #define TIMER_INTERVAL_SEC 10
@@ -29,6 +38,8 @@ typedef struct thread_node{
     SLIST_ENTRY(thread_node) next;
 }thread_node;
 
+#if USE_AESD_CHAR_DEVICE
+#else
 void handle_timer() {
     time_t now = time(NULL);
     struct tm* local_time = localtime(&now);
@@ -36,12 +47,15 @@ void handle_timer() {
     strftime(timestamp, sizeof(timestamp), "timestamp: %a, %d %b %Y %H:%M:%S %z\n", local_time);
 
     pthread_mutex_lock(&thread_list_mutex);
-    int file_fd = open(FILE_PATH, O_WRONLY | O_APPEND, 0644);
-    if (file_fd == -1) {
-        syslog(LOG_ERR, "Failed to open file: %s", strerror(errno));
-    } else {
-        write(file_fd, timestamp, strlen(timestamp));
-        close(file_fd);
+    if(file_fd == -1)
+    {
+	    file_fd = open(FILE_PATH, O_WRONLY | O_APPEND, 0644);
+	    if (file_fd == -1) {
+		syslog(LOG_ERR, "Failed to open file: %s", strerror(errno));
+	    } else {
+		write(file_fd, timestamp, strlen(timestamp));
+		close(file_fd);
+	    }
     }
     pthread_mutex_unlock(&thread_list_mutex);
 }
@@ -80,6 +94,7 @@ void setup_timer() {
         exit(EXIT_FAILURE);
     }
 }
+#endif
 
 // Define the head of the singly linked list using queue.h macros
 SLIST_HEAD(slisthead, thread_node) head;
@@ -109,13 +124,15 @@ void handle_signal(int signal) {
     	shutdown(server_fd, SHUT_RDWR);
         close(server_fd);
     }
-    
+#if USE_AESD_CHAR_DEVICE
+#else
     // Delete the file
     if (remove(FILE_PATH) == 0) {
         syslog(LOG_INFO, "Deleted file %s", FILE_PATH);
     } else {
         syslog(LOG_ERR, "Failed to delete file %s", FILE_PATH);
     }
+#endif
     
     closelog();
     exit(0);
@@ -138,7 +155,7 @@ void* handle_client(void* arg) {
     char *packet = NULL;
     size_t packet_len = 0;
 
-    int file_fd = open(FILE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    file_fd = open(FILE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (file_fd == -1) {
         syslog(LOG_ERR, "Failed to open file: %s", strerror(errno));
         syslog(LOG_INFO, "Closed connection from %s", client_ip);
@@ -215,7 +232,11 @@ void* handle_client(void* arg) {
 
 int read_file_and_send(char *packet, int client_fd)
 {
-	int file_fd = open(FILE_PATH, O_RDONLY);
+
+	if (file_fd == -1)
+	{
+		file_fd = open(FILE_PATH, O_RDONLY);
+	}
 	if (file_fd == -1) {
 		syslog(LOG_INFO, "Closed connection from %s", client_ip);
 		syslog(LOG_ERR, "File open failed");
@@ -345,8 +366,11 @@ int main(int argc, char *argv[]) {
     // Initialize the head of the list
     SLIST_INIT(&head);
     
+    #if USE_AESD_CHAR_DEVICE
+    #else
     // Setup the timer
     setup_timer();
+    #endif
 
     while (1) {
         struct sockaddr_in client_addr;

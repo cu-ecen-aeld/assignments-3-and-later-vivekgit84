@@ -28,6 +28,7 @@ struct aesd_dev aesd_device;
 
 int aesd_open(struct inode *inode, struct file *filp)
 {
+    struct aesd_dev *dev;
     PDEBUG("open");
     /**
      * TODO: handle open
@@ -69,13 +70,13 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
 
     // Lock the device for thread-safe access
-    mutex_lock(&dev->lock);
+    mutex_lock(&dev->device_lock);
 
     // Retrieve the entry and offset based on the current file position
-    entry = aesd_circular_buffer_find_entry_offset_for_pos(&dev->circular_buffer, *f_pos, &entry_offset);
+    entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->circ_buffer, *f_pos, &entry_offset);
     if (!entry) {
         // No data available for the current file position
-        mutex_unlock(&dev->lock);
+        mutex_unlock(&dev->device_lock);
         return 0; // EOF
     }
 
@@ -86,8 +87,8 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     bytes_to_copy = min(remaining_bytes, count);
 
     // Copy data from the circular buffer to user space
-    if (copy_to_user(buf, entry->buffer + entry_offset, bytes_to_copy)) {
-        mutex_unlock(&dev->lock);
+    if (copy_to_user(buf, entry->buffptr + entry_offset, bytes_to_copy)) {
+        mutex_unlock(&dev->device_lock);
         return -EFAULT; // Return error for failed copy
     }
 
@@ -95,41 +96,37 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     *f_pos += bytes_to_copy;
     retval = bytes_to_copy;
 
-    mutex_unlock(&dev->lock);
+    mutex_unlock(&dev->device_lock);
 
     return retval;
 }
 
-ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
-                   loff_t *f_pos)
-{
+ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos) {
     struct aesd_dev *dev = filp->private_data;
-    ssize_t retval = count; // Return the number of bytes successfully written
+    ssize_t retval = count;
     char *kern_buf = NULL;
     char *temp_buf = NULL;
-    size_t remaining_space;
-    struct aesd_buffer_entry *new_entry;
+    struct aesd_buffer_entry new_entry;
     bool found_newline = false;
     size_t i;
 
     PDEBUG("write %zu bytes", count);
 
-    // Allocate kernel buffer for the write request
+    // Allocate memory for incoming data
     kern_buf = kmalloc(count, GFP_KERNEL);
     if (!kern_buf) {
         return -ENOMEM;
     }
 
-    // Copy data from user space to kernel space
+    // Copy data from user space
     if (copy_from_user(kern_buf, buf, count)) {
         kfree(kern_buf);
         return -EFAULT;
     }
 
-    // Lock the device to ensure thread-safe access
-    mutex_lock(&dev->lock);
+    mutex_lock(&dev->device_lock);
 
-    // Append data to the partial buffer until terminated by '\n'
+    // Check for newline character
     for (i = 0; i < count; ++i) {
         if (kern_buf[i] == '\n') {
             found_newline = true;
@@ -138,53 +135,46 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     }
 
     if (!found_newline) {
-        // Append the entire buffer to the partial command
+        // Append to partial command
         dev->partial_command = krealloc(dev->partial_command, dev->partial_size + count, GFP_KERNEL);
         if (!dev->partial_command) {
-            mutex_unlock(&dev->lock);
+            mutex_unlock(&dev->device_lock);
             kfree(kern_buf);
             return -ENOMEM;
         }
         memcpy(dev->partial_command + dev->partial_size, kern_buf, count);
         dev->partial_size += count;
     } else {
-        // Process the command terminated by '\n'
+        // Handle completed command
         size_t newline_offset = i + 1;
-
-        // Allocate memory for the complete command
         temp_buf = kmalloc(dev->partial_size + newline_offset, GFP_KERNEL);
         if (!temp_buf) {
-            mutex_unlock(&dev->lock);
+            mutex_unlock(&dev->device_lock);
             kfree(kern_buf);
             return -ENOMEM;
         }
 
-        // Copy the partial command and the new data
+        // Copy partial command and new data
         memcpy(temp_buf, dev->partial_command, dev->partial_size);
         memcpy(temp_buf + dev->partial_size, kern_buf, newline_offset);
 
-        // Free the old partial command
+        // Free old partial command
         kfree(dev->partial_command);
         dev->partial_command = NULL;
         dev->partial_size = 0;
 
-        // Add the new entry to the circular buffer
-        new_entry = aesd_circular_buffer_add_entry(&dev->circular_buffer, temp_buf, dev->partial_size + newline_offset);
-        if (!new_entry) {
-            kfree(temp_buf); // Free memory if adding to the buffer fails
-        }
-
-        // Remove old entries if there are more than 10
-        if (dev->circular_buffer.size > 10) {
-            aesd_circular_buffer_remove_oldest_entry(&dev->circular_buffer);
-        }
+        // Add to circular buffer
+        new_entry.buffptr = temp_buf;
+        new_entry.size = dev->partial_size + newline_offset;
+        aesd_circular_buffer_add_entry(&dev->circ_buffer, &new_entry);
     }
 
-    mutex_unlock(&dev->lock);
+    mutex_unlock(&dev->device_lock);
     kfree(kern_buf);
 
     return retval;
 }
+
 
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
@@ -248,7 +238,7 @@ void aesd_cleanup_module(void)
     /**
      * TODO: cleanup AESD specific poritions here as necessary
      */
-
+    aesd_circular_buffer_exit_cleanup(&aesd_device.circ_buffer);
     unregister_chrdev_region(devno, 1);
 }
 
