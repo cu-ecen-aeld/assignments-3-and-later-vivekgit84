@@ -1,26 +1,35 @@
-# Makefile for writer application
+# Define the compiler and flags
+CC ?= gcc
+CFLAGS ?= -Wall -Wextra -Werror
+LDFLAGS ?= 
 
-# Compiler
-CC = gcc
+# Define the target executable
+TARGET ?= aesdsocket
 
-# Cross-compiler prefix (default to empty, meaning native compilation)
-CROSS_COMPILE ?=
+# Define the source files
+SRCS ?= aesdsocket.c
 
-# Compiler flags
-CFLAGS = -Wall -Wextra -pthread -lgcc_s -lrt
+# Define the object files
+OBJS ?= $(SRCS:.c=.o)
 
-# Source files
-SRC = aesdsocket.c
+# Check if CROSS_COMPILE is specified
+ifdef CROSS_COMPILE
+CC = $(CROSS_COMPILE)gcc
+endif
 
-# Output binary
-OUTPUT = aesdsocket
+# Default target to build the application
+all: $(TARGET)
 
-all: $(OUTPUT)
+# Rule to build the target executable
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-$(OUTPUT): $(SRC)
-	$(CROSS_COMPILE)$(CC) $(CFLAGS) -o $(OUTPUT) $(SRC)
+# Rule to compile the source files into object files
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
+# Clean target to remove the executable and object files
 clean:
-	rm -f $(OUTPUT)
+	rm -f $(TARGET) $(OBJS)
 
 .PHONY: all clean
