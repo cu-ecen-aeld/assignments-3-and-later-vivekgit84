@@ -165,15 +165,15 @@ int aesd_init_module(void) {
     result = alloc_chrdev_region(&dev, aesd_minor, 1, "aesdchar");
     aesd_major = MAJOR(dev);
     if (result < 0) {
-        // printk(KERN_WARNING "Can't get major %d\n", aesd_major);
         PDEBUG("Can't get major %d\n", aesd_major);
-        goto deviceNumberFail;
+        return result;
     }
     memset(&aesd_device, 0, sizeof(struct aesd_dev));
 
     result = aesd_setup_cdev(&aesd_device);
     if (result) {
-        goto cdevRegisterFail;
+    	unregister_chrdev_region(dev, 1);
+    	return -1;
     }
 
     aesd_circular_buffer_init(&aesd_device.buffer);
@@ -182,26 +182,12 @@ int aesd_init_module(void) {
     aesd_device.data_buffer.size = 0;
 
     return 0;
-
-cdevRegisterFail:
-    unregister_chrdev_region(dev, 1);
-deviceNumberFail:
-    return result;
+    
 }
 
 void aesd_cleanup_module(void) {
     uint8_t index;
     dev_t devno = MKDEV(aesd_major, aesd_minor);
-
-    // for (index = 0; index < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED; index++)
-    // {
-    //     if (aesd_device.buffer.entry[index].buffptr) {
-    //         kfree(aesd_device.buffer.entry[index].buffptr);
-    //     }
-    // }
-
-    // if (aesd_device.data_buffer.buffptr)
-    //     kfree(aesd_device.data_buffer.buffptr);
 
     cdev_del(&(aesd_device.cdev));
     unregister_chrdev_region(devno, 1);
