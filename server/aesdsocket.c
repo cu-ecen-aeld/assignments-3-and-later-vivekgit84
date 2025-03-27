@@ -10,9 +10,9 @@
 #include <pthread.h>
 #include <time.h>
 #include <sys/stat.h>
+#include "../aesd-char-driver/aesd_ioctl.h"
 
 #define PORT 9000
-
 #define USE_AESD_CHAR_DEVICE
 
 #ifdef USE_AESD_CHAR_DEVICE
@@ -28,54 +28,10 @@ typedef struct thread_node {
 
 int server_fd;
 pthread_mutex_t data_mutex = PTHREAD_MUTEX_INITIALIZER;
-ThreadNode *thread_list = NULL;                    // Linked list to manage threads
+ThreadNode *thread_list = NULL;
 
-// Signal handler to gracefully exit the program
-void signal_handler(int sig) {
-    if (sig == SIGINT || sig == SIGTERM) {
-        syslog(LOG_INFO, "Caught signal, exiting");
-
-        pthread_mutex_lock(&data_mutex);  // Lock mutex before cleanup
-
-        // Request exit from each thread and wait for threads to complete execution
-        ThreadNode *current = thread_list;
-        while (current != NULL) {
-            pthread_cancel(current->tid);  // Request thread exit
-            pthread_join(current->tid, NULL);  // Wait for thread to complete
-            ThreadNode *temp = current;
-            current = current->next;
-            free(temp);  // Free thread node memory
-        }
-        thread_list = NULL;
-
-        pthread_mutex_unlock(&data_mutex);  // Unlock mutex after cleanup
-
-        close(server_fd);  // Close server socket
-        #ifndef USE_AESD_CHAR_DEVICE
-        remove(DATA_FILE); // Remove data file
-        #endif
-        exit(EXIT_SUCCESS); // Exit the program
-    }
-}
-
-// Function to handle sending data back to the client
-void send_data_to_client(int client_socket) {
-    FILE *fp = fopen(DATA_FILE, "r");
-    if (fp == NULL) {
-        perror("fopen");
-        exit(EXIT_FAILURE);
-    }
-
-    char buffer[1024];
-    while (fgets(buffer, sizeof(buffer), fp) != NULL) {
-        send(client_socket, buffer, strlen(buffer), 0);
-    }
-
-    fclose(fp);
-}
-    #ifndef USE_AESD_CHAR_DEVICE
+#ifndef USE_AESD_CHAR_DEVICE
 void *append_timestamp(void *arg) {
-    // Function to append timestamp every 10 seconds
     while (1) {
         time_t current_time = time(NULL);
         struct tm *time_info = localtime(&current_time);
@@ -84,7 +40,7 @@ void *append_timestamp(void *arg) {
         strftime(timestamp, sizeof(timestamp), "timestamp:%a, %d %b %Y %H:%M:%S %z", time_info);
         strcat(timestamp, "\n");
 
-        pthread_mutex_lock(&data_mutex); // Lock mutex for file writing
+        pthread_mutex_lock(&data_mutex);
 
         FILE *fp = fopen(DATA_FILE, "a");
         if (fp == NULL) {
@@ -97,60 +53,132 @@ void *append_timestamp(void *arg) {
         fputs(timestamp, fp);
         fclose(fp);
 
-        pthread_mutex_unlock(&data_mutex); // Unlock mutex after file writing
+        pthread_mutex_unlock(&data_mutex);
 
         sleep(10);
     }
 }
-    #endif
-// Function executed by each thread to handle client connection
+#endif
+
+void signal_handler(int sig) {
+    if (sig == SIGINT || sig == SIGTERM) {
+        syslog(LOG_INFO, "Caught signal, exiting");
+
+        pthread_mutex_lock(&data_mutex);
+
+        ThreadNode *current = thread_list;
+        while (current != NULL) {
+            pthread_cancel(current->tid);
+            pthread_join(current->tid, NULL);
+            ThreadNode *temp = current;
+            current = current->next;
+            free(temp);
+        }
+        thread_list = NULL;
+
+        pthread_mutex_unlock(&data_mutex);
+
+        close(server_fd);
+#ifndef USE_AESD_CHAR_DEVICE
+        remove(DATA_FILE);
+#endif
+        exit(EXIT_SUCCESS);
+    }
+}
+
+void handle_write_command(const char *command) {
+    unsigned int x, y;
+    if (sscanf(command, "AESDCHAR_IOCSEEKTO:%u,%u", &x, &y) == 2) {
+        FILE *fp = fopen(DATA_FILE, "r+");
+        if (fp == NULL) {
+            perror("fopen");
+            exit(EXIT_FAILURE);
+        }
+
+        int fd = fileno(fp);
+
+        struct aesd_seekto seek_data;
+        seek_data.write_cmd = x;
+        seek_data.write_cmd_offset = y;
+
+        if (ioctl(fd, AESDCHAR_IOCSEEKTO, &seek_data) == -1) {
+            perror("ioctl AESDCHAR_IOCSEEKTO");
+            fclose(fp);
+            exit(EXIT_FAILURE);
+        }
+
+        fclose(fp);
+    }
+}
+
+void send_aesdchar_content(int client_socket) {
+    FILE *fp = fopen(DATA_FILE, "r");
+    if (fp == NULL) {
+        perror("fopen");
+        exit(EXIT_FAILURE);
+    }
+
+    char buffer[1024];
+    size_t bytes_read;
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), fp)) > 0) {
+        send(client_socket, buffer, bytes_read, 0);
+    }
+
+    fclose(fp);
+}
+
 void *connection_handler(void *socket_desc) {
-    int client_socket = *(int *)socket_desc;  // Get client socket from argument
-    free(socket_desc);  // Free the allocated memory for socket descriptor
+    int client_socket = *(int *)socket_desc;
+    free(socket_desc);
 
     char buffer[1024];
     ssize_t bytes_received;
     FILE *fp = fopen(DATA_FILE, "a+");
     if (fp == NULL) {
         perror("fopen");
-        pthread_exit(NULL);  // Exit thread on file open error
+        pthread_exit(NULL);
     }
 
     while ((bytes_received = recv(client_socket, buffer, sizeof(buffer), 0)) > 0) {
-        pthread_mutex_lock(&data_mutex);  // Lock mutex before critical section
+        pthread_mutex_lock(&data_mutex);
 
         buffer[bytes_received] = '\0';
-        fprintf(fp, "%s", buffer);  // Write received data to file
 
         char *newline = strchr(buffer, '\n');
         if (newline != NULL) {
-            fflush(fp);  // Flush data to file
-            send_data_to_client(client_socket);  // Send data back to client
-            memset(buffer, 0, sizeof(buffer));  // Clear buffer for next data
+            if (strncmp(buffer, "AESDCHAR_IOCSEEKTO:", strlen("AESDCHAR_IOCSEEKTO:")) == 0) {
+                handle_write_command(buffer);
+            } else {
+                fprintf(fp, "%s", buffer);
+                fflush(fp);
+            }
+
+            send_aesdchar_content(client_socket);
+            memset(buffer, 0, sizeof(buffer));
         }
 
-        pthread_mutex_unlock(&data_mutex);  // Unlock mutex after critical section
+        pthread_mutex_unlock(&data_mutex);
     }
 
-    close(client_socket);  // Close client socket
-    fclose(fp);             // Close file
-    pthread_exit(NULL);     // Exit thread
+    close(client_socket);
+    fclose(fp);
+    pthread_exit(NULL);
 }
 
 int main(int argc, char *argv[]) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = signal_handler; // Set signal handler function
+    sa.sa_handler = signal_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
 
-    sigaction(SIGINT, &sa, NULL);   // Register SIGINT signal handler
-    sigaction(SIGTERM, &sa, NULL);  // Register SIGTERM signal handler
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
 
     int daemon_mode = 0;
 
     if (argc > 1 && strcmp(argv[1], "-d") == 0) {
-        daemon_mode = 1;  // Enable daemon mode if "-d" argument provided
+        daemon_mode = 1;
     }
 
     if (daemon_mode) {
@@ -160,7 +188,7 @@ int main(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
         if (pid > 0) {
-            exit(EXIT_SUCCESS); // Parent process exits
+            exit(EXIT_SUCCESS);
         }
         umask(0);
         if (setsid() < 0) {
@@ -191,17 +219,16 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-
-    #ifndef USE_AESD_CHAR_DEVICE
-        pthread_t timestamp_thread;
+#ifndef USE_AESD_CHAR_DEVICE
+    pthread_t timestamp_thread;
     if (pthread_create(&timestamp_thread, NULL, append_timestamp, NULL) != 0) {
         perror("pthread_create");
         exit(EXIT_FAILURE);
     }
-    #endif
+#endif
 
     while (1) {
-        int *new_socket = malloc(sizeof(int));  // Allocate memory for new socket
+        int *new_socket = malloc(sizeof(int));
         if (new_socket == NULL) {
             perror("malloc");
             exit(EXIT_FAILURE);
@@ -221,7 +248,6 @@ int main(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
 
-        // Create a new node for the linked list to store thread information
         ThreadNode *new_node = (ThreadNode *)malloc(sizeof(ThreadNode));
         if (new_node == NULL) {
             perror("malloc");
@@ -230,9 +256,8 @@ int main(int argc, char *argv[]) {
         new_node->tid = tid;
         new_node->next = NULL;
 
-        pthread_mutex_lock(&data_mutex);  // Lock mutex before adding to linked list
+        pthread_mutex_lock(&data_mutex);
 
-        // Add the new thread node to the linked list
         if (thread_list == NULL) {
             thread_list = new_node;
         } else {
@@ -243,7 +268,7 @@ int main(int argc, char *argv[]) {
             current->next = new_node;
         }
 
-        pthread_mutex_unlock(&data_mutex);  // Unlock mutex after adding to linked list
+        pthread_mutex_unlock(&data_mutex);
     }
 
     return 0;
